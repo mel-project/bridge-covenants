@@ -1,0 +1,45 @@
+# the coin can only be unlocked if we receive a valid proof of destruction
+
+struct ProofOfDestruction {
+    quantity: Nat,
+    denom: %[],
+    destination: Hash
+}
+
+# if it is valid (there's a proof of confirmation on Ethereum), returns the proof of destruction. otherwise return false
+def get_proof(): ProofOfDestruction | False = 0
+
+def denom_eq(a: %[], b: %[]): Bool =
+    if blen(a) == 1 && blen(b) == 1 then
+        unsafe ((a :! %[1])[0] == (b :! %[1])[0])
+    else if blen(a) == 32 && blen(b) == 32 then
+        unsafe (b2n(a :! %[32]) == b2n(b :! %[32]))
+    else
+        0
+
+---
+
+let proof = get_proof() in
+# proof can't be false
+proof &&
+if proof.quantity < env_parent_value() then
+    # self-propagate and ensure that all the "rest" of the locked coins go to the self-propagated covenant
+    # the unlocked quantity goes to the destination address
+    let output_0 = vref(env_spender_tx().outputs, 0) in
+    let output_1 = vref(env_spender_tx().outputs, 1) in
+        output_0 && 
+        output_0.value == env_parent_value() - proof.quantity && 
+        denom_eq(output_0.denom, env_parent_denom()) &&
+        b2n(output_0.covhash) == b2n(env_self_hash()) &&
+        output_1 &&
+        output_1.value == proof.quantity &&
+        denom_eq(output_1.denom, env_parent_denom()) &&
+        b2n(output_1.covhash) == b2n(proof.destination)
+else if proof.quantity == env_parent_value() then
+    # fully unlock, meaning there are no constraints other than the first output must contain all the money to the right destination
+    let output_0 = vref(env_spender_tx().outputs, 0) in
+        output_0 &&
+        output_0.value == env_parent_value() &&
+        denom_eq(output_0.denom, env_parent_denom()) &&
+        b2n(output_0.covhash) == b2n(proof.destination)
+else 0
