@@ -1,0 +1,30 @@
+type U8 = {0..255}
+type HashVec = [U8; 32]
+type EmptyNode = [U8; 0]
+type BranchNode = [[U8;]; 17]
+type ExtensionNode = [[U8;], HashVec]
+type LeafNode = [[U8;]; 2]
+
+struct Node {
+    hash: HashVec,
+    node: []
+}
+
+def get_nibble(bytes: [U8;], index: Nat) =
+    let byte = vref(bytes, index / 2) in
+    if index % 2 then byte && 15 else byte && 240
+
+def node2hash(node: [U8; $n]) =
+    if $n < 32 then keccak256(node) else node
+
+def verify_proof<$n>(root_hash: HashVec, key: HashVec, proof: [$n + 1]) =
+    let hash = keccak256(proof[0]) in
+    if !(hash == root_hash) then 0 else
+    let node = rlp_decode(proof[0]) in
+    let i = 1 :: {1..$n} in
+    let nib_idx = 0 :: {0..63} in
+    loop $n do 
+        # if keccak256(proof[i]) == node2hash(node[get_nibble(key, nib_idx)]);
+        # i <- i + 1;
+        # nib_idx <-
+        # node <- rlp_decode(node)
