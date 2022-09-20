@@ -17,14 +17,20 @@ def get_nibble(bytes: [U8;], index: Nat) =
 def node2hash(node: [U8; $n]) =
     if $n < 32 then keccak256(node) else node
 
+def skip_partial_path<$k, $p>(partial_path: [$p], key: [$k + 1], nib_idx: {0..$k}) =
+    for i in range($p) fold accum = 0 with accum + if partial_path[i] == key[nib_idx + i] then 1 else fail!
+
 def verify_proof<$n>(root_hash: HashVec, key: HashVec, proof: [$n + 1]) =
     let hash = keccak256(proof[0]) in
-    if !(hash == root_hash) then 0 else
+    if !(hash == root_hash) then False else
     let node = rlp_decode(proof[0]) in
     let i = 1 :: {1..$n} in
     let nib_idx = 0 :: {0..63} in
-    loop $n do 
-        # if keccak256(proof[i]) == node2hash(node[get_nibble(key, nib_idx)]);
-        # i <- i + 1;
-        # nib_idx <-
-        # node <- rlp_decode(node)
+    let proof_fail = False in
+    let isvalid_and_value = loop $n do 
+        proof_fail <- if keccak256(proof[i]) == node2hash(node[get_nibble(key, nib_idx)]) then proof_fail else True;
+        nib_idx <- if vlen(node) == 2 && get_nibble(node[0], 0) < 4 then nib_idx + skip_partial_path(node[0], key, nib_idx);
+        node <- rlp_decode(node[i]);
+        i <- i + 1
+    return !proof_fail ++ node
+    if isvalid_and_value[0] then isvalid_and_value[1] else fail!
