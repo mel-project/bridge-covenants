@@ -1,0 +1,27 @@
+type U8 = {0..255}
+
+def rlp_decode<$n>(input: [U8; $n]) =
+    let byte = if $n == 0 then fail! else index[0] in
+    # single byte with value < 128
+    else if byte < 128 then byte
+    # string
+    else if byte < 191 then rpl_decode_string(input)
+    # list
+    else rpl_decode_list(input)
+
+def rlp_decode_string<$n>(input: [U8; $n]) =
+    # string 0-55 bytes in length
+    if input[0] let len = byte - 128 in
+    input[0..len]
+    # string > 55 bytes in length
+    else let meta_len = byte - 183 in
+        let len = input[0..meta_len] in
+        input[meta_len..meta_len + len]
+
+# def rlp_decode_list<$n>(input: [U8; $n]) =
+#     # list with total payload of 0-55 bytes
+#     if byte < 248
+#     then let num_items = byte - 192 in
+        
+#     # a list with a total payload of more than 55 bytes
+#     else 
