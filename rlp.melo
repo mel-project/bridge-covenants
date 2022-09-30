@@ -8,7 +8,7 @@ def rlp_decode<$n>(input: [U8; $n + 1]) =
     # single byte with value < 128
     if byte < 128 then byte
     # string
-    else if byte < 191 then rlp_decode_string<$s = $n>(input)
+    else if byte < 192 then rlp_decode_string<$s = $n>(input)
     # list
     else rlp_decode_list<$l = $n>(input)
 
@@ -29,6 +29,6 @@ def rlp_decode_string<$s>(input: [U8; $s + 1]) =
         if len == 0 then []
         else input[0..len :! {0..$s}]
     # string > 55 bytes in length
-    else let meta_len = byte - 183 in
+    else let meta_len = byte - 184 in
         let len = v2n<$n = $s>(input[0..meta_len :! {0..$s}] :! [U8; $s + 1]) in
         input[meta_len :! {0..$s}..(meta_len + len) :! {0..$s}]

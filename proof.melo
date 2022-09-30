@@ -10,6 +10,7 @@ struct Node {
     node: []
 }
 
+# todo: probably a better impl would be get_nibble_array()
 def get_nibble(bytes: [U8;], index: Nat) =
     let byte = vref(bytes, index / 2) in
     if index % 2 then byte && 15 else byte && 240
