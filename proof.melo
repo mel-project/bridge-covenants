@@ -1,37 +1,37 @@
+type U4 = {0..15}
 type U8 = {0..255}
-type HashVec = [U8; 32]
-type EmptyNode = [U8; 0]
-type BranchNode = [[U8;]; 17]
-type ExtensionNode = [[U8;], HashVec]
-type LeafNode = [[U8;]; 2]
 
-struct Node {
-    hash: HashVec,
-    node: []
-}
+# # todo: probably a better impl would be to_nibbles()
+# def get_nibble(bytes: [U8;], index: Nat) =
+#     let byte = vref(bytes, index / 2) in
+#     if index % 2 then byte && 15 else byte && 240
 
-# todo: probably a better impl would be get_nibble_array()
-def get_nibble(bytes: [U8;], index: Nat) =
-    let byte = vref(bytes, index / 2) in
-    if index % 2 then byte && 15 else byte && 240
+# def node2hash(node: [U8; $n]) =
+#     if $n < 32 then keccak256(node) else node
 
-def node2hash(node: [U8; $n]) =
-    if $n < 32 then keccak256(node) else node
+# def skip_partial_path<$k, $p>(partial_path: [$p], key: [$k + 1], nib_idx: {0..$k}) =
+#     for i in range($p) fold accum = 0 with accum + if partial_path[i] == key[nib_idx + i] then 1 else fail!
 
-def skip_partial_path<$k, $p>(partial_path: [$p], key: [$k + 1], nib_idx: {0..$k}) =
-    for i in range($p) fold accum = 0 with accum + if partial_path[i] == key[nib_idx + i] then 1 else fail!
+# def verify_proof<$n>(root_hash: HashVec, key: HashVec, proof: [$n + 1]) = 0
 
-def verify_proof<$n>(root_hash: HashVec, key: HashVec, proof: [$n + 1]) =
-    let hash = keccak256(proof[0]) in
-    if !(hash == root_hash) then False else
-    let node = rlp_decode(proof[0]) in
-    let i = 1 :: {1..$n} in
-    let nib_idx = 0 :: {0..63} in
-    let proof_fail = False in
-    let isvalid_and_value = loop $n do 
-        proof_fail <- if keccak256(proof[i]) == node2hash(node[get_nibble(key, nib_idx)]) then proof_fail else True;
-        nib_idx <- if vlen(node) == 2 && get_nibble(node[0], 0) < 4 then nib_idx + skip_partial_path(node[0], key, nib_idx);
-        node <- rlp_decode(node[i]);
-        i <- i + 1
-    return !proof_fail ++ node
-    if isvalid_and_value[0] then isvalid_and_value[1] else fail!
+# def proof2list() = # todo once bytestring slicing is implemented
+#     unsafe let byte = ((vref(env_spender_tx().outputs, 0) :! CoinData).additional_data :! %[1])[0] in
+#     if byte < 248 # short list
+
+# todo: remove offset and just send slice without length bytes?
+def branch_next<$n>(branch: %[$n + 1], offset: {0..$n}, nibble: U8) =
+    #unsafe let next_hash = x"" :! %[32] in
+    unsafe let next_hash = 0 :! U8 in
+    let node_idx = 0 :! U4 in
+    let len_byte = 0 :! Nat in
+    loop 16 do
+        len_byte <- branch[offset];
+        next_hash <- if nibble == node_idx then branch[(offset + 1) :! {0..$n}] else next_hash;
+        offset <- if len_byte == 128 then (offset + 1) :! {0..$n} else (offset + 33) :! {0..$n};
+        node_idx <- (node_idx + 1) :! U4
+    return next_hash
+
+---
+
+let branch = x"f90191a04afdeba7fefb0adc262f8b41452c9ce478f9d8ab7e34e9bd71b28da9c326d597a0e044dc0b5d7263dbca3a9aa87d794c52b495b1c380b36d24031ea7821a8b6171a0c05131dde6a35de1d85a562aa250fbc076a6777d02685de0433c4c52911682ef80a0c356e1beccd5e77a7300c1dcd1a808ae07e732deacd8eef49f1eda4a65946b1980a00a4c0e6429c4a1e71c2ae1bb6d2427b7e7978a56aed7c86ac50a6329d648b906a0435ed0af602b5b9e15ed439d005df0a32ce1b9c271c47e5576300b07e18ae4dba0" ++ x"149056551322ade0bef850c8ff53bf8bcf1975fec7c911a076d26c02339d533fa0bc0f060fd16dfaa54ae8135854089476d4da361e5881fd3e93fb8a8a5d851886a0153da6d2c71e70f1ad0020f1663643cc24cc00bdb04c11e87ffd5c483533cdd9a096916e8044b53837df860e191a35cc2629f2d3395bb17a71cbaa28e301b7deaf80a05e85ac83ff5fbf667b66c3f414229be180f414f52f6b0f86cb180db20e4087b8a0c6cb4cbfa178826be44e45cc060323d2a99cc94f326c174b6b83a4d7045ba4028080" in
+    branch_next(branch, 3, 14)
