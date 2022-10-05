@@ -42,16 +42,18 @@ def to_nibbles(key: %[32]): [U4; 64] =
 #   else if node_len > 56 then let offset = 2 in offset
 #   else let offset = 1 in offset
 
-def decode_node<$n, $p>(rlp_node: %[$n + 1]) = #: [%[]; $p] =
-  unsafe let node = [] :! [%[]; $p] in
+def decode_node<$n>(rlp_node: %[$n + 1]) = #: [%[]; $p] =
+  unsafe let node = [] :! [%[];] in
   let item_len = 0 :! Nat in
   let node_len = $n + 1 in
-  let offset = (if node_len > 257 then 3
-  else if node_len > 56 then 2
-  else 1) :! {0..$n} in
-  loop 16 do
-    item_len <- (if offset < node_len then rlp_node[offset] - 128 else item_len);
-    node <- if offset < node_len then node ++ [rlp_node[offset + 1..offset + 1 + item_len]] else node;
+  let offset = (
+    if node_len > 257 then 3
+    else if node_len > 56 then 2
+    else 1
+  ) :! {0..$n} in
+  loop 17 do
+    item_len <- if offset < node_len then rlp_node[offset] - 128 else item_len;
+    node <- if offset < node_len then node ++ [unsafe_bslice(rlp_node, offset + 1, offset + 1 + item_len)] :: [%[];] else node;
     offset <- (offset + 1 + item_len) :! {0..$n} # todo: more efficient to check if or to add?
   return node
 
