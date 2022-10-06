@@ -1,48 +1,63 @@
-type NLandML = [MetaLen, NodeLen]
-type MetaLen = {0..3}
 type Node = [%[];]
-type NodeLen = {0..516}
+type Nodes = [[%[];];]
 type Proof = %[16384]
 type ProofIndex = {0..16383}
+type RlpNode = %[532]
+type RlpNodeIndex = {0..531}
+type RlpNodes = [%[]; 32]
+type RlpNodesIndex = {0..31}
 type U4 = {0..15}
 
 def get_additional_data() =
   unsafe (vref(env_spender_tx().outputs, 0) :! CoinData).additional_data
 
-def proof2nodes() =
-    unsafe let proof = get_additional_data() :! Proof in
-    let offset = 0 :: ProofIndex in
+def proof2nodes(proof: Proof) =
+    unsafe let offset = 0 :: ProofIndex in
     let nodes = [] :: Node in
-    let nodelen_and_metalen = [0, 0] :: NLandML in
+    let node_len = 0 :: RlpNodeIndex in
     loop 64 do
-      nodelen_and_metalen <- if offset < blen(proof) then (
-          if proof[offset] == 249 then [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(proof, offset + 1, offset + 3) :! %[2])] ++ [3]
-          else if proof[offset] == 248 then [proof[(offset + 1) :! ProofIndex]] ++ [2]
-          else [proof[offset] - 192] ++ [1]
-        ) :! NLandML
-        else nodelen_and_metalen;
+      node_len <- if offset < blen(proof) then (
+          if proof[offset] == 249
+          then b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(proof, offset + 1, offset + 3) :! %[2]) + 3
+          else if proof[offset] == 248 then proof[(offset + 1) :! ProofIndex] + 2
+          else proof[offset] - 192 + 1
+        ) :! RlpNodeIndex
+        else node_len;
       nodes <- if offset < blen(proof)
-        then nodes ++ [unsafe_bslice(proof, extern call "print"(offset + nodelen_and_metalen[1]) :! Nat, extern call "print"(offset + nodelen_and_metalen[0] + nodelen_and_metalen[1]) :! Nat)] :! Node
+        then nodes ++ [unsafe_bslice(proof, offset, offset + node_len)] :! Node
         else nodes;
       offset <- if offset < blen(proof)
-        then (offset + nodelen_and_metalen[0] + nodelen_and_metalen[1]) :! ProofIndex
+        then (offset + node_len) :! ProofIndex
         else offset
     return nodes
 
-def decode_node<$n>(rlp_node: %[$n + 1]) =
+def decode_node(rlp_node: %[]) =
   unsafe let node = [] :! Node in
-  let node_len = $n + 1 in
-  let item_len = 0 :! Nat in
+  let node_len = blen(rlp_node) in
   let offset = (
     if node_len > 257 then 3
     else if node_len > 56 then 2
     else 1
-  ) :! {0..$n} in
+  ) :! RlpNodeIndex in
+  let itemlen_metalen = [0, 0] :: [Nat; 2] in
   loop 17 do
-    item_len <- if offset < node_len then rlp_node[offset] - 128 else item_len;
-    node <- if offset < node_len then node ++ [unsafe_bslice(rlp_node, offset + 1, offset + 1 + item_len)] :: Node else node;
-    offset <- (offset + 1 + item_len) :! {0..$n} # todo: more efficient to check if or to add?
+    itemlen_metalen <- if offset >= node_len then itemlen_metalen
+      else if (rlp_node :! RlpNode)[offset] < 120 then [(rlp_node :! RlpNode)[offset]] ++ [0]
+      else if (rlp_node :! RlpNode)[offset] < 184 then [(rlp_node :! RlpNode)[offset] - 128] ++ [1]
+      else [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])] ++ [2];
+    node <- if offset < node_len then node ++ [unsafe_bslice(rlp_node, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])] :: Node else node;
+    offset <- (offset + itemlen_metalen[0] + 1) :! RlpNodeIndex # todo: more efficient to check if or to add?
   return node
+
+def decode_nodes(rlp_nodes: RlpNodes) =
+  unsafe let nodes = [] :: Nodes in
+  let idx = 0 :: RlpNodesIndex  in
+  loop 32 do
+    nodes <- if idx < vlen(rlp_nodes)
+      then nodes ++ [decode_node(rlp_nodes[idx])] :! Nodes
+      else nodes;
+    idx <- (idx + 1) :! RlpNodesIndex
+  return nodes
 
 def to_nibbles(key: %[32]): [U4; 64] =
   unsafe let nibbles = [] :! [U4; 64] in
@@ -55,6 +70,11 @@ def to_nibbles(key: %[32]): [U4; 64] =
     idx <- (idx + 1) :! {0..63}
   return nibbles
 
+def verify_proof() =
+  unsafe let rlp_nodes = proof2nodes(get_additional_data() :! Proof) in
+  let nodes = decode_nodes(rlp_nodes :! RlpNodes) in
+  nodes
+
 ---
 
-proof2nodes()
+verify_proof()
