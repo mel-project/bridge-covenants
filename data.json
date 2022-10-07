@@ -28,28 +28,6 @@
         }
     ]
 }
-Need: txHash of coin to redeem (index is assumed 0), state_root at proof height, eth contract address (hardcoded in cov)
-if txHash == env_parent_tx_hash()
-key = keccak256(contract_address)
-turn key into nibble vector and use to traverse proof:
-if keccak256(proof[0]) == state_root
-proof_idx = 0
-nibble_idx = 0
-for nibble in key_nibbles:
-    node = proof[proof_idx]
-    node_idx = 0
-    if node[0] < 248 # short list
-    then len = node[0] - 192
-    else metalen = node[0] - 247 # long list
-        len = for i in range(metalen) fold accum = 0 with proof[i + 1] << (metalen - i - 1) * 8
-    # branch
-    for i in range(16)
-        if i == nibble then node[node_idx + 1..node_idx + 33]
-
-
-
-key = keccak256(keccak256(txHash ++ x"00000000000000000000000000000000000000000000000000000000000000fe"))
-turn key into nibble vector and use to traverse proof:
 
 f9 - long list
     0211 - 529 bytes
@@ -362,7 +340,7 @@ f8 long list
         a0
             ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
-    "storageIndexPreimage": 0xafaac4c8835a322fab6dcf0d95b36e1726b01153594692dfaf4eb769fd30923600000000000000000000000000000000000000000000000000000000000000fe
+    "storageSlot": 0xafaac4c8835a322fab6dcf0d95b36e1726b01153594692dfaf4eb769fd30923600000000000000000000000000000000000000000000000000000000000000fe
 
     "storageIndex": 0x9e0d64af58fe0f75c92a3614e7edea6c880c945499df8934160ce3e7e7fc30ac
 
