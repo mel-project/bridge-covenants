@@ -276,6 +276,7 @@ def keccak384<$n>(input: [U8; $n]) =
 def keccak512<$n>(input: [U8; $n]) =
     keccak(576, 1024, input, 1, 64)
 
+type Account = [%[]; 4]
 type Nibbles = [U4; 64]
 type Node = [%[];]
 type Nodes = [[%[];];]
@@ -322,11 +323,15 @@ def decode_rlp_node(rlp_node: %[]) =
   let itemlen_metalen = [0, 0] :: [Nat; 2] in
   loop 17 do
     itemlen_metalen <- if offset >= node_len then itemlen_metalen
-      else if (rlp_node :! RlpNode)[offset] < 120 then [(rlp_node :! RlpNode)[offset]] ++ [0]
+      else if (rlp_node :! RlpNode)[offset] < 128 then [(rlp_node :! RlpNode)[offset]] ++ [0]
       else if (rlp_node :! RlpNode)[offset] < 184 then [(rlp_node :! RlpNode)[offset] - 128] ++ [1]
-      else [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])] ++ [2];
+      else if (rlp_node :! RlpNode)[offset] == 184 then [(rlp_node :! RlpNode)[(offset + 1) :! RlpNodeIndex]] ++ [2]
+      else if (rlp_node :! RlpNode)[offset] == 185 then [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])] ++ [3]
+      else if (rlp_node :! RlpNode)[offset] < 248 then [(rlp_node :! RlpNode)[offset] - 192] ++ [1]
+      else if (rlp_node :! RlpNode)[offset] == 248 then [(rlp_node :! RlpNode)[(offset + 1) :! RlpNodeIndex]] ++ [2]
+      else [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])] ++ [3];
     node <- if offset < node_len then node ++ [unsafe_bslice(rlp_node, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])] :: Node else node;
-    offset <- (offset + itemlen_metalen[0] + 1) :! RlpNodeIndex # todo: more efficient to check if or to add?
+    offset <- (offset + itemlen_metalen[0] + itemlen_metalen[1]) :! RlpNodeIndex # todo: more efficient to check if or to add?
   return node
 
 def decode_rlp_nodes(rlp_nodes: RlpNodes) =
@@ -380,22 +385,54 @@ def proof_stf(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, state: ProofS
 def stopgap_b2v<$n>(bstr: %[$n]) =
     unsafe for i in range($n) fold bvec = [] :! [U8; $n] with if i < blen(bstr) then (bvec ++ [(bstr :! %[$n + 1])[i :! {0..$n}]]) :! [U8; $n] else bvec
 
-def verify_proof() =
+#   f8 - long list 
+#       44 - 68
+#       01
+#       80
+#       a0
+#           f6a6e32a02bb620e6f4136218a1b35813eb39d7020dcda5a5a2eec3ba7d3730d *
+#       a0
+#           8100557c8be579c2c4aeecfcb930fd87d3047e56971a9de106f57f28760dcf0b
+def decode_rlp_account(rlp_account: %[134]) =
+  unsafe let account_len = blen(rlp_account) in
+  let offset = (if account_len > 257 then 3 else 2) :: {0..133} in
+  let itemlen_metalen = [0, 0] :: [Nat; 2] in
+  let account = [] :! Account in
+  loop 17 do
+    itemlen_metalen <- if offset >= account_len then itemlen_metalen
+      else if rlp_account[offset] < 128 then [rlp_account[offset]] ++ [0]
+      else if rlp_account[offset] < 184 then [rlp_account[offset] - 128] ++ [1]
+      else if rlp_account[offset] == 184 then [rlp_account[(offset + 1) :! {0..133}]] ++ [2]
+      else [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_account, offset + 1, offset + 3) :! %[2])] ++ [3];
+    account <- if offset < account_len then (account ++ [unsafe_bslice(rlp_account, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])]) :! Account else account;
+    offset <- (offset + itemlen_metalen[0] + itemlen_metalen[1]) :! {0..133} # todo: more efficient to check if or to add?
+  return account
+
+
+def verify_proof(): Bool =
   unsafe let proof = get_proof() :! Proof in
   let rlp_nodes = to_rlp_nodes(proof) :! RlpNodes in
   let nodes = decode_rlp_nodes(rlp_nodes) in
   let eth_bridge_addr = x"56e618fb75b9344efbcd63ef138f90277b1c1593" in
   let account_key = v2b_256(keccak256(b2v(eth_bridge_addr))) in
   let account_nibbles = to_nibbles(account_key) in
-  let node_idx = 0 :: Nat in
-  let proof_state = [0, get_state_root(), 0] :: ProofState in
-  loop 64 do
-    proof_state <- if !(b2n(proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, account_nibbles, proof_state) else proof_state
-  return proof_state
-  # let storage_slot = x"00000000000000000000000000000000000000000000000000000000000000fe" in
-  # let storage_idx = v2b_256(keccak256(b2v(env_parent_tx_hash() ++ storage_slot))) in
-  # let storage_key = v2b_256(keccak256(b2v(n2b(b2n(storage_idx) + 2)))) in
-  # let storage_nibbles = to_nibbles(storage_key)
+  let acc_proof_state = [0, get_state_root(), 0] :: ProofState in
+  let acc_proof_result = loop 64 do
+    acc_proof_state <- if !(b2n(acc_proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, account_nibbles, acc_proof_state) else acc_proof_state
+  return acc_proof_state in
+  let storage_slot = x"00000000000000000000000000000000000000000000000000000000000000fe" in
+  let storage_idx = v2b_256(keccak256(b2v(env_parent_tx_hash() ++ storage_slot))) in
+  let storage_key = v2b_256(keccak256(b2v(n2b(b2n(storage_idx) + 2)))) in
+  let storage_nibbles = to_nibbles(storage_key) in
+  let account  = decode_rlp_account((nodes :! [[%[];]; 64])[(acc_proof_result[0] - 1) :! {0..63}] :! [%[134]; 4][1]) in
+  let storage_root = account[2] in
+  let sto_proof_state = [acc_proof_result[0], storage_root, 0] :! ProofState in
+  let sto_proof_result = loop 64 do
+    sto_proof_state <- if !(b2n(sto_proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, storage_nibbles, sto_proof_state) else sto_proof_state
+  return sto_proof_state in
+  if sto_proof_result[0] == vlen(rlp_nodes) then && sto_proof_result[1] && sto_proof_result[2] == 64
+  then 1
+  else 0
 
 ---
 
