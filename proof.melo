@@ -276,7 +276,8 @@ def keccak384<$n>(input: [U8; $n]) =
 def keccak512<$n>(input: [U8; $n]) =
     keccak(576, 1024, input, 1, 64)
 
-type Account = [%[]; 4]
+type Account = [%[]; 4] # todo: change to struct
+type Address = %[32]
 type Nibbles = [U4; 64]
 type Node = [%[];]
 type Nodes = [[%[];];]
@@ -385,14 +386,6 @@ def proof_stf(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, state: ProofS
 def stopgap_b2v<$n>(bstr: %[$n]) =
     unsafe for i in range($n) fold bvec = [] :! [U8; $n] with if i < blen(bstr) then (bvec ++ [(bstr :! %[$n + 1])[i :! {0..$n}]]) :! [U8; $n] else bvec
 
-#   f8 - long list 
-#       44 - 68
-#       01
-#       80
-#       a0
-#           f6a6e32a02bb620e6f4136218a1b35813eb39d7020dcda5a5a2eec3ba7d3730d *
-#       a0
-#           8100557c8be579c2c4aeecfcb930fd87d3047e56971a9de106f57f28760dcf0b
 def decode_rlp_account(rlp_account: %[134]) =
   unsafe let account_len = blen(rlp_account) in
   let offset = (if account_len > 257 then 3 else 2) :: {0..133} in
@@ -409,7 +402,7 @@ def decode_rlp_account(rlp_account: %[134]) =
   return account
 
 
-def verify_proof(): Bool =
+def verify_proof(): Address | False =
   unsafe let proof = get_proof() :! Proof in
   let rlp_nodes = to_rlp_nodes(proof) :! RlpNodes in
   let nodes = decode_rlp_nodes(rlp_nodes) in
@@ -430,8 +423,8 @@ def verify_proof(): Bool =
   let sto_proof_result = loop 64 do
     sto_proof_state <- if !(b2n(sto_proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, storage_nibbles, sto_proof_state) else sto_proof_state
   return sto_proof_state in
-  if sto_proof_result[0] == vlen(rlp_nodes) then && sto_proof_result[1] && sto_proof_result[2] == 64
-  then 1
+  if sto_proof_result[0] == vlen(rlp_nodes) && b2n(sto_proof_result[1]) == 0 && sto_proof_result[2] == 64
+  then let leaf_val = vref(vref(nodes, sto_proof_result[0] - 1) :! [%[];], 1) :! %[] in unsafe_bslice(leaf_val, 1, blen(leaf_val)) :! Address
   else 0
 
 ---
