@@ -369,13 +369,16 @@ def skip_nibbles(nibbles: Nibbles, nib_idx: {0..63}, path: %[]) =
 
 # [node_idx, hash, nibble_idx]
 def proof_stf(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, state: ProofState): ProofState =
-  unsafe if !(b2n(v2b_256(keccak256(b2v(rlp_nodes[state[0]])))) == b2n(state[1])) then fail! else
+  unsafe if !(b2n(v2b_256(keccak256(stopgap_b2v(rlp_nodes[state[0]])))) == b2n(state[1])) then fail! else
   let node = vref(nodes, state[0]) :! [%[32]; 17] in
   if vlen(node) == 17 # branch
   then [(state[0] + 1) :! {0..63}, (node :! [%[32]; 17])[nibbles[state[2]]], (state[2] + 1) :! {0..63}]
   else if node[0][0] < 32 # extension
   then [(state[0] + 1) :! {0..63}, node[1], skip_nibbles(nibbles, state[2], node[0])]
   else [(state[0] + 1) :! {0..63}, x"0000000000000000000000000000000000000000000000000000000000000000", skip_nibbles(nibbles, state[2], node[0])]
+
+def stopgap_b2v<$n>(bstr: %[$n]) =
+    unsafe for i in range($n) fold bvec = [] :! [U8; $n] with if i < blen(bstr) then (bvec ++ [(bstr :! %[$n + 1])[i :! {0..$n}]]) :! [U8; $n] else bvec
 
 def verify_proof() =
   unsafe let proof = get_proof() :! Proof in
@@ -387,21 +390,13 @@ def verify_proof() =
   let node_idx = 0 :: Nat in
   let proof_state = [0, get_state_root(), 0] :: ProofState in
   loop 64 do
-    proof_state <- if proof_state[0] < vlen(nodes) then proof_stf(rlp_nodes, nodes, account_nibbles, proof_state) else proof_state
+    proof_state <- if !(b2n(proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, account_nibbles, proof_state) else proof_state
   return proof_state
-  
   # let storage_slot = x"00000000000000000000000000000000000000000000000000000000000000fe" in
   # let storage_idx = v2b_256(keccak256(b2v(env_parent_tx_hash() ++ storage_slot))) in
   # let storage_key = v2b_256(keccak256(b2v(n2b(b2n(storage_idx) + 2)))) in
   # let storage_nibbles = to_nibbles(storage_key)
 
 ---
-# unsafe let proof = get_proof() :! Proof in
-# let rlp_nodes = to_rlp_nodes(proof) :! RlpNodes in
-# let nodes = decode_rlp_nodes(rlp_nodes) in
-# let eth_bridge_addr = x"56e618fb75b9344efbcd63ef138f90277b1c1593" in
-# let account_key = v2b_256(keccak256(b2v(eth_bridge_addr))) in
-# let account_nibbles = to_nibbles(account_key) in
-# let state = [0, x"c671c549337d6a4ee70629601169bff2f65c91f573f1f88ed21978e45aa61b02", 0] in
-# proof_stf(rlp_nodes, nodes, account_nibbles, state)
+
 verify_proof()
