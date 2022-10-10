@@ -231,8 +231,8 @@ def keccak256<$n>(input: %[$n + 1]) =
     keccak<$n = $n>(1088, 512, input, 1, 32)
 
 type Account = [%[]; 4]
-type Address = %[32]
 type Nibbles = [U4; 64]
+type NibblesIndex = {0..63}
 type Node = [%[];]
 type Nodes = [[%[];];]
 type Proof = %[16384]
@@ -245,17 +245,21 @@ type RlpNodes = [%[532]; 64]
 type RlpNodesIndex = {0..63}
 type U4 = {0..15}
 
-def get_proof() =
+# retrieves the additional_data field of the first output of the spending transaction
+def get_proof(): %[] =
   unsafe (vref(env_spender_tx().outputs, 0) :! CoinData).additional_data
 
-def to_rlp_nodes(proof: Proof) =
+# parses a concatenated string of RLP encoded MPT nodes
+def to_rlp_nodes(proof: Proof): [%[];] =
     unsafe let offset = 0 :: ProofIndex in
     let nodes = [] :: Node in
     let node_len = 0 :: RlpNodeIndex in
     loop 64 do
       node_len <- if offset < blen(proof) then (
           if proof[offset] == 249
-          then b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(proof, offset + 1, offset + 3) :! %[2]) + 3
+          then b2n(
+            x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(proof, offset + 1, offset + 3) :! %[2]
+          ) + 3
           else if proof[offset] == 248 then proof[(offset + 1) :! ProofIndex] + 2
           else proof[offset] - 192 + 1
         ) :! RlpNodeIndex
@@ -268,7 +272,8 @@ def to_rlp_nodes(proof: Proof) =
         else offset
     return nodes
 
-def decode_rlp_node(rlp_node: %[]) =
+# decodes an RLP encoded MPT node
+def decode_rlp_node(rlp_node: %[]): Node =
   unsafe let node = [] :! Node in
   let node_len = blen(rlp_node) in
   let offset = (
@@ -282,15 +287,22 @@ def decode_rlp_node(rlp_node: %[]) =
       else if (rlp_node :! RlpNode)[offset] < 128 then [(rlp_node :! RlpNode)[offset]] ++ [0]
       else if (rlp_node :! RlpNode)[offset] < 184 then [(rlp_node :! RlpNode)[offset] - 128] ++ [1]
       else if (rlp_node :! RlpNode)[offset] == 184 then [(rlp_node :! RlpNode)[(offset + 1) :! RlpNodeIndex]] ++ [2]
-      else if (rlp_node :! RlpNode)[offset] == 185 then [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])] ++ [3]
+      else if (rlp_node :! RlpNode)[offset] == 185 then [
+        b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])
+      ] ++ [3]
       else if (rlp_node :! RlpNode)[offset] < 248 then [(rlp_node :! RlpNode)[offset] - 192] ++ [1]
       else if (rlp_node :! RlpNode)[offset] == 248 then [(rlp_node :! RlpNode)[(offset + 1) :! RlpNodeIndex]] ++ [2]
-      else [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])] ++ [3];
-    node <- if offset < node_len then node ++ [unsafe_bslice(rlp_node, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])] :: Node else node;
+      else [
+        b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])
+      ] ++ [3];
+    node <- if offset < node_len then node ++ [
+      unsafe_bslice(rlp_node, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])
+    ] :: Node else node;
     offset <- (offset + itemlen_metalen[0] + itemlen_metalen[1]) :! RlpNodeIndex # todo: more efficient to check if or to add?
   return node
 
-def decode_rlp_nodes(rlp_nodes: RlpNodes) =
+# decodes an array of RLP encoded MPT nodes
+def decode_rlp_nodes(rlp_nodes: RlpNodes): Nodes =
   unsafe let nodes = [] :: Nodes in
   let idx = 0 :: RlpNodesIndex  in
   loop 32 do
@@ -300,7 +312,8 @@ def decode_rlp_nodes(rlp_nodes: RlpNodes) =
     idx <- (idx + 1) :! RlpNodesIndex
   return nodes
 
-def to_nibbles(key: %[])  =
+# converts a 32-byte key into a nibble array
+def to_nibbles(key: %[]): Nibbles =
   unsafe let nibbles = [] :! Nibbles in
   let idx = 0 :: {0..63} in
   loop 64 do
@@ -315,10 +328,12 @@ def to_nibbles(key: %[])  =
     idx <- (idx + 1) :! {0..63}
   return nibbles
 
-def get_state_root() =
+# retrieves the header state root at the height the proof was retrieved
+def get_state_root(): Hash =
   x"c671c549337d6a4ee70629601169bff2f65c91f573f1f88ed21978e45aa61b02"
 
-def skip_path(nibbles: Nibbles, nib_idx: {0..63}, path: %[]) =
+# matches common paths in extension and leaf node partial paths to key nibbles and returns the resulting nibble index
+def skip_path(nibbles: Nibbles, nib_idx: {0..63}, path: %[]): NibblesIndex =
   unsafe let path_nibbles = to_nibbles(path) in
   let path_idx = (if path_nibbles[0] % 2 == 0 then 2 else 1) :: {0..63} in
   loop 64 do
@@ -328,17 +343,38 @@ def skip_path(nibbles: Nibbles, nib_idx: {0..63}, path: %[]) =
     path_idx <- (path_idx + 1) :! {0..63};
   return nib_idx
 
-# [node_idx, hash, nibble_idx]
+# the state transition function for MPT proofs
 def proof_stf(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, state: ProofState): ProofState =
   unsafe if !(b2n(keccak256(rlp_nodes[state[0]]))) == b2n(state[1]) then fail! else
   let node = vref(nodes, state[0]) :! [%[32]; 17] in
   if vlen(node) == 17 # branch
-  then [(state[0] + 1) :! {0..63}, (node :! [%[32]; 17])[nibbles[state[2]]], (state[2] + 1) :! {0..63}]
+  then [
+    (state[0] + 1) :! {0..63},
+    (node :! [%[32]; 17])[nibbles[state[2]]],
+    (state[2] + 1) :! {0..63}
+  ]
   else if node[0][0] < 32 # extension
-  then [(state[0] + 1) :! {0..63}, node[1], skip_path(nibbles, state[2], node[0])]
-  else [(state[0] + 1) :! {0..63}, x"0000000000000000000000000000000000000000000000000000000000000000", skip_path(nibbles, state[2], node[0])]
+  then [
+    (state[0] + 1) :! {0..63},
+    node[1], skip_path(nibbles,
+    state[2], node[0])
+  ]
+  else [ # leaf
+    (state[0] + 1) :! {0..63},
+    x"0000000000000000000000000000000000000000000000000000000000000000",
+    skip_path(nibbles, state[2], node[0])
+  ]
 
-def decode_rlp_account(rlp_account: RlpAccount) =
+# verifies the validity of a MPT proof and returns the final state of the proof
+def verify_proof(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, proof_state: ProofState): ProofState =
+  loop 64 do
+    proof_state <- if !(b2n(proof_state[1]) == 0)
+    then proof_stf(rlp_nodes, nodes, nibbles, proof_state)
+    else proof_state
+  return proof_state
+
+# decodes an RLP encoded Ethereum account
+def decode_rlp_account(rlp_account: RlpAccount): Account =
   unsafe let account_len = blen(rlp_account) in
   let offset = (if account_len > 257 then 3 else 2) :: {0..133} in
   let itemlen_metalen = [0, 0] :: [Nat; 2] in
@@ -348,14 +384,24 @@ def decode_rlp_account(rlp_account: RlpAccount) =
       else if rlp_account[offset] < 128 then [rlp_account[offset]] ++ [0]
       else if rlp_account[offset] < 184 then [rlp_account[offset] - 128] ++ [1]
       else if rlp_account[offset] == 184 then [rlp_account[(offset + 1) :! {0..133}]] ++ [2]
-      else [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_account, offset + 1, offset + 3) :! %[2])] ++ [3];
+      else [
+        b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_account, offset + 1, offset + 3) :! %[2])
+      ] ++ [3];
     account <- if offset < account_len 
-      then (account ++ [unsafe_bslice(rlp_account, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])]) :! Account
+      then (account ++ [
+        unsafe_bslice(
+          rlp_account,
+          offset + itemlen_metalen[1],
+          offset + itemlen_metalen[0] + itemlen_metalen[1]
+        )
+      ]) :! Account
       else account;
     offset <- (offset + itemlen_metalen[0] + itemlen_metalen[1]) :! {0..133} # todo: more efficient to check if or to add?
   return account
 
-def verify_proof(): Address | False =
+# Verifies that the MPT proof included with the spending transaction satisfies the necessary conditions to prove the locked
+# coin was burned on the Ethereum side; If the conditions are met then the coin is unlocked and transferred to the returned address
+def unlock(): Hash | False =
   unsafe let proof = get_proof() :! Proof in
   let rlp_nodes = to_rlp_nodes(proof) :! RlpNodes in
   let nodes = decode_rlp_nodes(rlp_nodes) in
@@ -363,9 +409,8 @@ def verify_proof(): Address | False =
   let account_key = keccak256(eth_bridge_addr) in
   let account_nibbles = to_nibbles(account_key) in
   let acc_proof_state = [0, get_state_root(), 0] :: ProofState in
-  let acc_proof_result = loop 64 do
-    acc_proof_state <- if !(b2n(acc_proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, account_nibbles, acc_proof_state) else acc_proof_state
-  return acc_proof_state in
+  let acc_proof_result =  verify_proof(rlp_nodes, nodes, account_nibbles, acc_proof_state) in
+  if !(b2n(acc_proof_result[1]) == 0 && acc_proof_result[2] == 64) then fail! else
   let storage_slot = x"00000000000000000000000000000000000000000000000000000000000000fe" in
   let storage_idx = keccak256(env_parent_tx_hash() ++ storage_slot) in
   let storage_key = keccak256(n2b(b2n(storage_idx) + 2)) in
@@ -373,14 +418,12 @@ def verify_proof(): Address | False =
   let account  = decode_rlp_account((nodes :! [[%[];]; 64])[(acc_proof_result[0] - 1) :! {0..63}] :! [RlpAccount; 4][1]) in
   let storage_root = account[2] in
   let sto_proof_state = [acc_proof_result[0], storage_root, 0] :! ProofState in
-  let sto_proof_result = loop 64 do
-    sto_proof_state <- if !(b2n(sto_proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, storage_nibbles, sto_proof_state) else sto_proof_state
-  return sto_proof_state in
+  let sto_proof_result = verify_proof(rlp_nodes, nodes, storage_nibbles, sto_proof_state) in
   if sto_proof_result[0] == vlen(rlp_nodes) && b2n(sto_proof_result[1]) == 0 && sto_proof_result[2] == 64
   then let leaf_val = vref(vref(nodes, sto_proof_result[0] - 1) :! [%[];], 1) :! %[]
-    in unsafe_bslice(leaf_val, 1, blen(leaf_val)) :! Address
+    in unsafe_bslice(leaf_val, 1, blen(leaf_val)) :! Hash
   else 0
 
 ---
 
-verify_proof()
+unlock()
