@@ -10,7 +10,7 @@ type U64 = {0..18446744073709551615}
 def rol64(n: Nat, b: Nat) =
     (n << (b % 64) | n >> (64 - (b % 64))) & 18446744073709551615
 
-# Loads a byte vector of length 8 into a 64-bit Nat
+# Loads a bytestring of length 8 into a 64-bit Nat
 def load64(lane_str: LaneStr) =
     unsafe let idx = 0 :: {0..7} in
     let lane_nat = 0 :: LaneNat in 
@@ -225,11 +225,12 @@ def keccak<$r, $n, $o>(bitrate: {$r * 8}, capacity: {0..1592}, input: %[$n + 1],
             else output;
         output_len <- if output_len > 0 then (output_len - blk_size) :! {$o} else output_len;
     return output
+
 # 32-byte output Keccak hashing function
 def keccak256<$n>(input: %[$n + 1]) =
     keccak<$n = $n>(1088, 512, input, 1, 32)
 
-type Account = [%[]; 4] # todo: change to struct
+type Account = [%[]; 4]
 type Address = %[32]
 type Nibbles = [U4; 64]
 type Node = [%[];]
@@ -237,6 +238,7 @@ type Nodes = [[%[];];]
 type Proof = %[16384]
 type ProofIndex = {0..16383}
 type ProofState = [{0..63}, %[32], {0..63}] # [node_idx, hash, nibble_idx]
+type RlpAccount = %[134]
 type RlpNode = %[532]
 type RlpNodeIndex = {0..531}
 type RlpNodes = [%[532]; 64]
@@ -316,7 +318,7 @@ def to_nibbles(key: %[])  =
 def get_state_root() =
   x"c671c549337d6a4ee70629601169bff2f65c91f573f1f88ed21978e45aa61b02"
 
-def skip_nibbles(nibbles: Nibbles, nib_idx: {0..63}, path: %[]) =
+def skip_path(nibbles: Nibbles, nib_idx: {0..63}, path: %[]) =
   unsafe let path_nibbles = to_nibbles(path) in
   let path_idx = (if path_nibbles[0] % 2 == 0 then 2 else 1) :: {0..63} in
   loop 64 do
@@ -333,13 +335,10 @@ def proof_stf(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, state: ProofS
   if vlen(node) == 17 # branch
   then [(state[0] + 1) :! {0..63}, (node :! [%[32]; 17])[nibbles[state[2]]], (state[2] + 1) :! {0..63}]
   else if node[0][0] < 32 # extension
-  then [(state[0] + 1) :! {0..63}, node[1], skip_nibbles(nibbles, state[2], node[0])]
-  else [(state[0] + 1) :! {0..63}, x"0000000000000000000000000000000000000000000000000000000000000000", skip_nibbles(nibbles, state[2], node[0])]
+  then [(state[0] + 1) :! {0..63}, node[1], skip_path(nibbles, state[2], node[0])]
+  else [(state[0] + 1) :! {0..63}, x"0000000000000000000000000000000000000000000000000000000000000000", skip_path(nibbles, state[2], node[0])]
 
-def stopgap_b2v<$n>(bstr: %[$n]) =
-    unsafe for i in range($n) fold bvec = [] :! [U8; $n] with if i < blen(bstr) then (bvec ++ [(bstr :! %[$n + 1])[i :! {0..$n}]]) :! [U8; $n] else bvec
-
-def decode_rlp_account(rlp_account: %[134]) =
+def decode_rlp_account(rlp_account: RlpAccount) =
   unsafe let account_len = blen(rlp_account) in
   let offset = (if account_len > 257 then 3 else 2) :: {0..133} in
   let itemlen_metalen = [0, 0] :: [Nat; 2] in
@@ -350,10 +349,11 @@ def decode_rlp_account(rlp_account: %[134]) =
       else if rlp_account[offset] < 184 then [rlp_account[offset] - 128] ++ [1]
       else if rlp_account[offset] == 184 then [rlp_account[(offset + 1) :! {0..133}]] ++ [2]
       else [b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_account, offset + 1, offset + 3) :! %[2])] ++ [3];
-    account <- if offset < account_len then (account ++ [unsafe_bslice(rlp_account, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])]) :! Account else account;
+    account <- if offset < account_len 
+      then (account ++ [unsafe_bslice(rlp_account, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])]) :! Account
+      else account;
     offset <- (offset + itemlen_metalen[0] + itemlen_metalen[1]) :! {0..133} # todo: more efficient to check if or to add?
   return account
-
 
 def verify_proof(): Address | False =
   unsafe let proof = get_proof() :! Proof in
@@ -370,14 +370,15 @@ def verify_proof(): Address | False =
   let storage_idx = keccak256(env_parent_tx_hash() ++ storage_slot) in
   let storage_key = keccak256(n2b(b2n(storage_idx) + 2)) in
   let storage_nibbles = to_nibbles(storage_key) in
-  let account  = decode_rlp_account((nodes :! [[%[];]; 64])[(acc_proof_result[0] - 1) :! {0..63}] :! [%[134]; 4][1]) in
+  let account  = decode_rlp_account((nodes :! [[%[];]; 64])[(acc_proof_result[0] - 1) :! {0..63}] :! [RlpAccount; 4][1]) in
   let storage_root = account[2] in
   let sto_proof_state = [acc_proof_result[0], storage_root, 0] :! ProofState in
   let sto_proof_result = loop 64 do
     sto_proof_state <- if !(b2n(sto_proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, storage_nibbles, sto_proof_state) else sto_proof_state
   return sto_proof_state in
   if sto_proof_result[0] == vlen(rlp_nodes) && b2n(sto_proof_result[1]) == 0 && sto_proof_result[2] == 64
-  then let leaf_val = vref(vref(nodes, sto_proof_result[0] - 1) :! [%[];], 1) :! %[] in unsafe_bslice(leaf_val, 1, blen(leaf_val)) :! Address
+  then let leaf_val = vref(vref(nodes, sto_proof_result[0] - 1) :! [%[];], 1) :! %[]
+    in unsafe_bslice(leaf_val, 1, blen(leaf_val)) :! Address
   else 0
 
 ---
