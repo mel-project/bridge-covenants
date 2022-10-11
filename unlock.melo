@@ -385,7 +385,11 @@ def decode_rlp_account(rlp_account: RlpAccount): Account =
       else if rlp_account[offset] < 184 then [rlp_account[offset] - 128] ++ [1]
       else if rlp_account[offset] == 184 then [rlp_account[(offset + 1) :! {0..133}]] ++ [2]
       else [
-        b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_account, offset + 1, offset + 3) :! %[2])
+        b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(
+          rlp_account,
+          offset + 1,
+          offset + 3
+        ) :! %[2])
       ] ++ [3];
     account <- if offset < account_len 
       then (account ++ [
@@ -405,7 +409,7 @@ def unlock(): Hash | False =
   unsafe let proof = get_proof() :! Proof in
   let rlp_nodes = to_rlp_nodes(proof) :! RlpNodes in
   let nodes = decode_rlp_nodes(rlp_nodes) in
-  let eth_bridge_addr = x"56e618fb75b9344efbcd63ef138f90277b1c1593" in
+  let eth_bridge_addr = x"d9ad04333ca7bc6e5b2a26804bdd4e7b364db3c3" in
   let account_key = keccak256(eth_bridge_addr) in
   let account_nibbles = to_nibbles(account_key) in
   let acc_proof_state = [0, get_state_root(), 0] :: ProofState in
