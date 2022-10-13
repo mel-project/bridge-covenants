@@ -169,12 +169,7 @@ def n2b_8(n: U8) =
 
 # Utility function for functional updates of bytestrings
 def bupdate<$n>(bstr: %[$n + 1], update_idx: {0..$n}, byte: U8) =
-    unsafe let idx = 0 :: {0..$n} in
-    let updated_str = "" :! %[$n +1] in
-    loop $n + 1 do
-        updated_str <- (updated_str ++ if idx == update_idx then n2b_8(byte) else n2b_8(bstr[idx])) :! %[$n + 1];
-        idx <- (idx + 1) :! {0..$n}
-    return updated_str
+    unsafe (unsafe_bslice(bstr, 0, update_idx) :! %[$n] ++ n2b_8(byte) ++ unsafe_bslice(bstr, update_idx + 1, $n + 1) :! %[$n]) :! %[$n + 1]
 
 # Keccak sponge function which has as a building block the Keccak-f1600 permutation
 def keccak<$r, $n, $o>(bitrate: {$r * 8}, capacity: {0..1592}, input: %[$n + 1], delim_suffix: U8, output_len: {$o}) =
@@ -368,9 +363,8 @@ def proof_stf(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, state: ProofS
 # verifies the validity of a MPT proof and returns the final state of the proof
 def verify_proof(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, proof_state: ProofState): ProofState =
   loop 64 do
-    proof_state <- if !(b2n(proof_state[1]) == 0)
-    then proof_stf(rlp_nodes, nodes, nibbles, proof_state)
-    else proof_state
+    proof_state <- if !(b2n(proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, nibbles, proof_state)
+      else proof_state
   return proof_state
 
 # decodes an RLP encoded Ethereum account
@@ -403,8 +397,8 @@ def decode_rlp_account(rlp_account: RlpAccount): Account =
     offset <- (offset + itemlen_metalen[0] + itemlen_metalen[1]) :! {0..133} # todo: more efficient to check if or to add?
   return account
 
-# Verifies that the MPT proof included with the spending transaction satisfies the necessary conditions to prove the locked
-# coin was burned on the Ethereum side; If the conditions are met then the coin is unlocked and transferred to the returned address
+# Verifies that the MPT proof included with the spending transaction proves the coin was burned on
+# Ethereum; If the conditions are met then the return value is therecipient's Themelio address, otherwise, 0
 def unlock(): Hash | False =
   unsafe let proof = get_proof() :! Proof in
   let rlp_nodes = to_rlp_nodes(proof) :! RlpNodes in
@@ -414,7 +408,7 @@ def unlock(): Hash | False =
   let account_nibbles = to_nibbles(account_key) in
   let acc_proof_state = [0, get_state_root(), 0] :: ProofState in
   let acc_proof_result =  verify_proof(rlp_nodes, nodes, account_nibbles, acc_proof_state) in
-  if !(b2n(acc_proof_result[1]) == 0 && acc_proof_result[2] == 64) then fail! else
+  if !(b2n(acc_proof_result[1]) == 0 && acc_proof_result[2] == 64) then 0 else
   let storage_slot = x"00000000000000000000000000000000000000000000000000000000000000fe" in
   let storage_idx = keccak256(env_parent_tx_hash() ++ storage_slot) in
   let storage_key = keccak256(n2b(b2n(storage_idx) + 2)) in
@@ -423,10 +417,10 @@ def unlock(): Hash | False =
   let storage_root = account[2] in
   let sto_proof_state = [acc_proof_result[0], storage_root, 0] :! ProofState in
   let sto_proof_result = verify_proof(rlp_nodes, nodes, storage_nibbles, sto_proof_state) in
-  if sto_proof_result[0] == vlen(rlp_nodes) && b2n(sto_proof_result[1]) == 0 && sto_proof_result[2] == 64
-  then let leaf_val = vref(vref(nodes, sto_proof_result[0] - 1) :! [%[];], 1) :! %[]
-    in unsafe_bslice(leaf_val, 1, blen(leaf_val)) :! Hash
-  else 0
+  if !(sto_proof_result[0] == vlen(rlp_nodes) && b2n(sto_proof_result[1]) == 0 && sto_proof_result[2] == 64) then 0 else
+  let leaf_val = vref(vref(nodes, sto_proof_result[0] - 1) :! [%[];], 1) :! %[] in
+  let recipient = unsafe_bslice(leaf_val, 1, blen(leaf_val)) :! Hash in
+  if b2n(recipient) == 0 || b2n(recipient) == 1 then 0 else recipient
 
 ---
 
