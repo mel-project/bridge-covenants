@@ -1,14 +1,429 @@
-# the coin can only be unlocked if we receive a valid proof of destruction
+type LaneStr = %[8] # a lane as a bytestring with length 8
+type LaneNat = U64 # a lane as a 64-bit Nat
+type Sheet = [LaneNat; 5]
+type StateLanes = [Sheet; 5]
+type State = %[200]
+type U8 = {0..255}
+type U64 = {0..18446744073709551615}
 
-struct ProofOfDestruction {
-    quantity: Nat,
-    denom: %[],
-    destination: Hash
-}
+# ROtate Left 64: rotates 64-bit Nat, n, b bits to the left
+def rol64(n: Nat, b: Nat) =
+    (n << (b % 64) | n >> (64 - (b % 64))) & 18446744073709551615
 
-# if it is valid (there's a proof of confirmation on Ethereum), returns the proof of destruction. otherwise return false
-def get_proof(): ProofOfDestruction | False = 0
+# Loads a bytestring of length 8 into a 64-bit Nat
+def load64(lane_str: LaneStr) =
+	unsafe let idx = 0 :: {0..7} in
+	let lane_nat = 0 :: LaneNat in 
+	loop 8 do
+			lane_nat <- (lane_nat + (lane_str[idx] << (idx * 8))) :! LaneNat;
+			idx <- (idx + 1) :! {0..7}
+	return lane_nat
 
+# Stores a 64-bit Nat into a bytestring of length 8
+def store64(lane_nat: LaneNat) =
+	unsafe let idx = 0 :: {0..7} in
+	let lane_str = "" :! LaneStr in 
+	loop 8 do
+			lane_str <- (lane_str ++ n2b_8(((lane_nat >> (idx * 8)) % 256) :! U8)) :! LaneStr;
+			idx <- (idx + 1) :! {0..7}
+	return lane_str
+
+# Converts State type to StateLanes type
+def to_lanes(state: State) =
+	unsafe let accum = [] :! StateLanes in
+	let accum_inner = [] :! Sheet in
+	let x = 0 :: {0..4} in
+	let y = 0 :: {0..4} in
+	loop 5 do
+			accum_inner <- [] :! Sheet;
+			accum_inner <- loop 5 do
+					accum_inner <- (accum_inner ++ [load64(unsafe_bslice(state, 8 * (x + 5 * y), 8 * (x + 5 * y) + 8) :! %[8])]) :! Sheet;
+					y <- (y + 1) :! {0..4}
+			return accum_inner;
+			accum <- (accum ++ [accum_inner]) :! StateLanes;
+			x <- (x + 1) :! {0..4};
+	return accum
+
+# Returns the C sheet which is necessary for computing the D sheet
+def c(lanes: StateLanes) =
+	unsafe for x in range(5) fold c = [] :! Sheet with (c ++ [
+			for sheet in lanes[x :! {0..4}] fold accum = 0 :: LaneNat with (accum ^ sheet) :! LaneNat
+	]) :! Sheet
+
+# Returns the D sheet which is necessary for computing the θ step of the permutation
+def d(c: Sheet) =
+    unsafe for x in range(5) fold d = [] :! Sheet with (d ++ [vref(c, (x + 4) % 5) ^ rol64(vref(c, (x + 1) % 5), 1)]) :! Sheet
+
+# θ step of permutation
+def theta(lanes: StateLanes) =
+	unsafe let c = c(lanes) in
+	let d = d(c) in
+	let new_lanes = [] :! StateLanes in
+	let sheet = [] :! Sheet in
+	let x = 0 :: {0..4} in
+	let y = 0 :: {0..4} in
+	loop 5 do
+			new_lanes <- (new_lanes ++ loop 5 do
+					sheet <- (sheet ++ [(lanes[x][y] ^ d[x])]) :! Sheet;
+					y <- (y + 1) :! {0..4}
+			return [sheet]) :! StateLanes;
+			x <- (x + 1) :! {0..4}
+	return new_lanes
+
+# ρ and π steps of permutation
+def rho_and_pi(lanes: StateLanes) =
+	unsafe let x = 1 :: {0..4} in
+	let y = 0 :: {0..4} in
+	let temp_x = 0 :: {0..4} in
+	let t = 0 :: {0..24} in
+	let curr_lane = lanes[x][y] in
+	let temp_lane = 0 :! LaneNat in
+	loop 24 do
+			temp_x <- x;
+			x <- y;
+			y <- ((2 * temp_x + 3 * y) % 5) :! {0..4};
+			temp_lane <- curr_lane;
+			curr_lane <- lanes[x][y];
+			lanes <- lanes[x => lanes[x][y => rol64(temp_lane, (t + 1) * (t + 2) / 2) :! LaneNat]];
+			t <- (t + 1) :! {0..23}
+	return lanes
+
+# Returns the T sheet which is necessary for computing the χ step of the permutation
+def t(lanes: StateLanes, y: {0..4}) =
+    [sheet[y] for sheet in lanes]
+
+# χ step of permutation
+def chi(lanes: StateLanes) =
+	unsafe let y = 0 :: {0..4} in
+	let x = 0 :: {0..4} in
+	let t = [] :! Sheet in
+	loop 5 do
+			t <- t(lanes, y);
+			lanes <- loop 5 do
+					lanes <- lanes[x => lanes[x][y => (t[x] ^ ((~vref(t, (x + 1) % 5)) & vref(t, (x + 2) % 5))) :! LaneNat]];
+					x <- (x + 1) :! {0..4}
+			return lanes;
+			y <- (y + 1) :! {0..4}
+	return lanes
+
+# ι step of permutation
+def iota(lanes: StateLanes, r: U8) =
+	unsafe let j = 0 :: Nat in
+	loop 7 do
+			r <- (((r << 1) ^ ((r >> 7) * 113)) % 256) :! U8;
+			lanes <- if r & 2 then lanes[0 => lanes[0][0 => (lanes[0][0] ^ (1 << ((1 << j) - 1))) :! LaneNat]] else lanes;
+			j <- j + 1
+	return [lanes] ++ [r]
+
+# Keccak-f1600 permutation on lanes
+def keccak_f1600_on_lanes(lanes: StateLanes) =
+	unsafe let r = 1 :: U8 in
+	let lanes_and_r = [] :! [StateLanes, U8] in
+	loop 24 do
+			lanes_and_r <- iota(chi(rho_and_pi(theta(lanes))), r);
+			lanes <- lanes_and_r[0];
+			r <- lanes_and_r[1]
+	return lanes
+
+# Keccak-f1600 permutation on state
+def keccak_f1600(state: State) =
+	unsafe let lanes = keccak_f1600_on_lanes(to_lanes(state)) in
+	let x = 0 :: {0..4} in
+	let y = 0 :: {0..4} in
+	let b = 0 :: {0..7} in
+	loop 5 do
+			state <- loop 5 do
+					state <- loop 8 do
+							state <- bupdate(state, 8 * (x + 5 * y) + b, store64(lanes[x][y])[b] :! U8);
+							b <- (b + 1) :! {0..7}
+					return state;
+					y <- (y + 1) :! {0..4}
+			return state;
+			x <- (x + 1) :! {0..4}
+	return state
+
+# Returns the smaller of two Nats
+def min(x: Nat, y: Nat): Nat = 
+    if x > y then y else x
+
+# Utility function for converting U8 to %[1]
+def n2b_8(n: U8) =
+	[
+			x"00", x"01", x"02", x"03", x"04", x"05", x"06", x"07", x"08", x"09", x"0a", x"0b", x"0c", x"0d", x"0e", x"0f",
+			x"10", x"11", x"12", x"13", x"14", x"15", x"16", x"17", x"18", x"19", x"1a", x"1b", x"1c", x"1d", x"1e", x"1f",
+			x"20", x"21", x"22", x"23", x"24", x"25", x"26", x"27", x"28", x"29", x"2a", x"2b", x"2c", x"2d", x"2e", x"2f",
+			x"30", x"31", x"32", x"33", x"34", x"35", x"36", x"37", x"38", x"39", x"3a", x"3b", x"3c", x"3d", x"3e", x"3f",
+			x"40", x"41", x"42", x"43", x"44", x"45", x"46", x"47", x"48", x"49", x"4a", x"4b", x"4c", x"4d", x"4e", x"4f",
+			x"50", x"51", x"52", x"53", x"54", x"55", x"56", x"57", x"58", x"59", x"5a", x"5b", x"5c", x"5d", x"5e", x"5f",
+			x"60", x"61", x"62", x"63", x"64", x"65", x"66", x"67", x"68", x"69", x"6a", x"6b", x"6c", x"6d", x"6e", x"6f",
+			x"70", x"71", x"72", x"73", x"74", x"75", x"76", x"77", x"78", x"79", x"7a", x"7b", x"7c", x"7d", x"7e", x"7f",
+			x"80", x"81", x"82", x"83", x"84", x"85", x"86", x"87", x"88", x"89", x"8a", x"8b", x"8c", x"8d", x"8e", x"8f",
+			x"90", x"91", x"92", x"93", x"94", x"95", x"96", x"97", x"98", x"99", x"9a", x"9b", x"9c", x"9d", x"9e", x"9f",
+			x"a0", x"a1", x"a2", x"a3", x"a4", x"a5", x"a6", x"a7", x"a8", x"a9", x"aa", x"ab", x"ac", x"ad", x"ae", x"af",
+			x"b0", x"b1", x"b2", x"b3", x"b4", x"b5", x"b6", x"b7", x"b8", x"b9", x"ba", x"bb", x"bc", x"bd", x"be", x"bf",
+			x"c0", x"c1", x"c2", x"c3", x"c4", x"c5", x"c6", x"c7", x"c8", x"c9", x"ca", x"cb", x"cc", x"cd", x"ce", x"cf",
+			x"d0", x"d1", x"d2", x"d3", x"d4", x"d5", x"d6", x"d7", x"d8", x"d9", x"da", x"db", x"dc", x"dd", x"de", x"df",
+			x"e0", x"e1", x"e2", x"e3", x"e4", x"e5", x"e6", x"e7", x"e8", x"e9", x"ea", x"eb", x"ec", x"ed", x"ee", x"ef",
+			x"f0", x"f1", x"f2", x"f3", x"f4", x"f5", x"f6", x"f7", x"f8", x"f9", x"fa", x"fb", x"fc", x"fd", x"fe", x"ff",
+	][n]
+
+# Utility function for functional updates of bytestrings
+def bupdate<$n>(bstr: %[$n + 1], update_idx: {0..$n}, byte: U8) =
+    unsafe (unsafe_bslice(bstr, 0, update_idx) :! %[$n] ++ n2b_8(byte) ++ unsafe_bslice(bstr, update_idx + 1, $n + 1) :! %[$n]) :! %[$n + 1]
+
+# Keccak sponge function which has as a building block the Keccak-f1600 permutation
+def keccak<$r, $n, $o>(bitrate: {$r * 8}, capacity: {0..1592}, input: %[$n + 1], delim_suffix: U8, output_len: {$o}) =
+	unsafe if !(capacity + bitrate == 1600) then fail! else
+	let state = x"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+		:: State in
+	let byterate = bitrate / 8 in
+	let input_len = blen(input) in
+	let offset = 0 :: {0..$n} in
+	let blk_size = 0 :: {0..$r * 8} in
+	let i = 0 :: {0..199} in
+	let offset_state_blksize = [] :! [{0..$n}, State, {0..$r * 8}] in
+	let state_and_blksize = loop $n + 1 do
+		blk_size <- if offset < input_len then min(input_len - offset, byterate) :! {0..$r * 8} else blk_size;
+		state <- if offset < input_len
+			then loop $r * 8 do
+				state <- if i < blk_size then bupdate(state, i, (state[i] ^ input[(offset + i) :! {0..$n}]) :! U8) else state;
+				i <- (i + 1) :! {0..199}
+			return state
+			else state;
+		offset_state_blksize <- if offset < input_len 
+			then loop 1 do
+				offset <- (offset + blk_size) :! {0..$n};
+				state <- if blk_size == byterate then keccak_f1600(state) else state;
+				blk_size <- if blk_size == byterate then 0 else blk_size
+			return [offset] ++ [state] ++ [blk_size]
+			else [offset] ++ [state] ++ [blk_size];
+		offset <- offset_state_blksize[0];
+		state <- offset_state_blksize[1];
+		blk_size <- offset_state_blksize[2]
+	return [state, blk_size] in
+	let state = state_and_blksize[0] in
+	let blk_size = state_and_blksize[1] in
+	let state = bupdate(state, blk_size :! {0..199}, (state[blk_size :! {0..199}] ^ delim_suffix) :! U8) in
+	let state = if !((delim_suffix & 128) == 0) && (blk_size == byterate - 1) then keccak_f1600(state) else state in
+	let state = bupdate(state, (byterate - 1) :! {0..199}, (state[(byterate - 1) :! {0..199}] ^ 128) :! U8) in
+	let state = keccak_f1600(state) in
+	let output = "" :! %[$o] in
+	let accum = "" :! %[$r] in
+	let i = 0 :: {0..$r} in
+	loop $o do
+		accum <- "" :! %[$r];
+		blk_size <- if output_len > 0 then min(output_len, byterate) :! {0..$r} else blk_size;
+		output <- if output_len > 0
+			then (output ++ loop $o do
+				accum <- if i < blk_size then (accum ++ n2b_8(state[i :! {0..199}])) :! %[$r] else accum;
+				i <- (i + 1) :! {0..$r}
+			return accum) :! %[$o]
+			else output;
+		output_len <- if output_len > 0 then (output_len - blk_size) :! {$o} else output_len;
+	return output
+
+# 32-byte output Keccak hashing function
+def keccak256<$n>(input: %[$n + 1]) =
+    keccak<$n = $n>(1088, 512, input, 1, 32)
+
+type Account = [%[]; 4]
+type Nibbles = [U4; 64]
+type NibblesIndex = {0..63}
+type Node = [%[];]
+type Nodes = [[%[];];]
+type Proof = %[16384]
+type ProofIndex = {0..16383}
+type ProofState = [{0..63}, %[32], {0..63}] # [node_idx, hash, nibble_idx]
+type RlpAccount = %[134]
+type RlpNode = %[532]
+type RlpNodeIndex = {0..531}
+type RlpNodes = [%[532]; 64]
+type RlpNodesIndex = {0..63}
+type U4 = {0..15}
+
+# retrieves the additional_data field of the first output of the spending transaction
+def get_proof(): %[] =
+    unsafe (vref(env_spender_tx().outputs, 0) :! CoinData).additional_data
+
+# parses a concatenated string of RLP encoded MPT nodes
+def to_rlp_nodes(proof: Proof): [%[];] =
+	unsafe let offset = 0 :: ProofIndex in
+	let nodes = [] :: Node in
+	let node_len = 0 :: RlpNodeIndex in
+	loop 64 do
+		node_len <- if offset < blen(proof) then (
+				if proof[offset] == 249
+				then b2n(
+					x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(proof, offset + 1, offset + 3) :! %[2]
+				) + 3
+				else if proof[offset] == 248 then proof[(offset + 1) :! ProofIndex] + 2
+				else proof[offset] - 192 + 1
+			) :! RlpNodeIndex
+			else node_len;
+		nodes <- if offset < blen(proof)
+			then nodes ++ [unsafe_bslice(proof, offset, offset + node_len)] :! Node
+			else nodes;
+		offset <- if offset < blen(proof)
+			then (offset + node_len) :! ProofIndex
+			else offset
+	return nodes
+
+# decodes an RLP encoded MPT node
+def decode_rlp_node(rlp_node: %[]): Node =
+    unsafe let node = [] :! Node in
+    let node_len = blen(rlp_node) in
+    let offset = (
+        if node_len > 257 then 3
+        else if node_len > 56 then 2
+        else 1
+    ) :! RlpNodeIndex in
+    let itemlen_metalen = [0, 0] :: [Nat; 2] in
+    loop 17 do
+        itemlen_metalen <- if offset >= node_len then itemlen_metalen
+            else if (rlp_node :! RlpNode)[offset] < 128 then [(rlp_node :! RlpNode)[offset]] ++ [0]
+            else if (rlp_node :! RlpNode)[offset] < 184 then [(rlp_node :! RlpNode)[offset] - 128] ++ [1]
+            else if (rlp_node :! RlpNode)[offset] == 184 then [(rlp_node :! RlpNode)[(offset + 1) :! RlpNodeIndex]] ++ [2]
+            else if (rlp_node :! RlpNode)[offset] == 185 then [
+                b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])
+            ] ++ [3]
+            else if (rlp_node :! RlpNode)[offset] < 248 then [(rlp_node :! RlpNode)[offset] - 192] ++ [1]
+            else if (rlp_node :! RlpNode)[offset] == 248 then [(rlp_node :! RlpNode)[(offset + 1) :! RlpNodeIndex]] ++ [2]
+            else [
+                b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(rlp_node, offset + 1, offset + 3) :! %[2])
+            ] ++ [3];
+        node <- if offset < node_len then node ++ [
+            unsafe_bslice(rlp_node, offset + itemlen_metalen[1], offset + itemlen_metalen[0] + itemlen_metalen[1])
+        ] :: Node else node;
+        offset <- (offset + itemlen_metalen[0] + itemlen_metalen[1]) :! RlpNodeIndex # todo: more efficient to check if or to add?
+    return node
+
+# decodes an array of RLP encoded MPT nodes
+def decode_rlp_nodes(rlp_nodes: RlpNodes): Nodes =
+    unsafe let nodes = [] :: Nodes in
+    let idx = 0 :: RlpNodesIndex    in
+    loop 32 do
+        nodes <- if idx < vlen(rlp_nodes)
+            then nodes ++ [decode_rlp_node(rlp_nodes[idx])] :! Nodes
+            else nodes;
+        idx <- (idx + 1) :! RlpNodesIndex
+    return nodes
+
+# converts a 32-byte key into a nibble array
+def to_nibbles(key: %[]): Nibbles =
+    unsafe let nibbles = [] :! Nibbles in
+    let idx = 0 :: {0..63} in
+    loop 64 do
+        nibbles <- if !(idx < blen(key) * 2) then nibbles
+            else (
+                nibbles ++ [
+                    if idx % 2
+                    then (key :! %[64])[(idx / 2) :! {0..63}] & 15
+                    else ((key :! %[64])[(idx / 2) :! {0..63}] & 240) >> 4
+                ]
+            ) :! Nibbles;
+        idx <- (idx + 1) :! {0..63}
+    return nibbles
+
+# retrieves the header state root at the height the proof was retrieved
+def get_state_root(): Hash =
+    x"337333f8eea1792a7366ca569cfa38f01c79240c20a9a06f6d89d87aebe1a18a"
+
+# matches common paths in extension and leaf node partial paths to key nibbles and returns the resulting nibble index
+def skip_path(nibbles: Nibbles, nib_idx: {0..63}, path: %[]): NibblesIndex =
+    unsafe let path_nibbles = to_nibbles(path) in
+    let path_idx = (if path_nibbles[0] % 2 == 0 then 2 else 1) :: {0..63} in
+    loop 64 do
+        nib_idx <- if path_idx < blen(path) * 2
+            then if nibbles[nib_idx] == path_nibbles[path_idx] then (nib_idx + 1) :! {0..63} else fail!
+            else nib_idx;
+        path_idx <- (path_idx + 1) :! {0..63};
+    return nib_idx
+
+# the state transition function for MPT proofs
+def proof_stf(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, state: ProofState): ProofState =
+    unsafe if !(b2n(keccak256(rlp_nodes[state[0]])) == b2n(state[1])) then fail! else
+    let node = vref(nodes, state[0]) :! [%[32]; 17] in
+    if vlen(node) == 17 # branch
+    then [
+        (state[0] + 1) :! {0..63},
+        (node :! [%[32]; 17])[nibbles[state[2]]],
+        (state[2] + 1) :! {0..63}
+    ]
+    else if node[0][0] < 32 # extension
+    then [
+        (state[0] + 1) :! {0..63},
+        node[1], skip_path(nibbles,
+        state[2], node[0])
+    ]
+    else [ # leaf
+        (state[0] + 1) :! {0..63},
+        x"0000000000000000000000000000000000000000000000000000000000000000",
+        skip_path(nibbles, state[2], node[0])
+    ]
+
+# verifies the validity of a MPT proof and returns the final state of the proof
+def verify_proof(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, proof_state: ProofState): ProofState =
+    loop 64 do
+        proof_state <- if !(b2n(proof_state[1]) == 0) then proof_stf(rlp_nodes, nodes, nibbles, proof_state)
+            else proof_state
+    return proof_state
+
+# decodes an RLP encoded Ethereum account
+def decode_rlp_account(rlp_account: RlpAccount): Account =
+    unsafe let account_len = blen(rlp_account) in
+    let offset = (if account_len > 257 then 3 else 2) :: {0..133} in
+    let itemlen_metalen = [0, 0] :: [Nat; 2] in
+    let account = [] :! Account in
+    loop 17 do
+        itemlen_metalen <- if offset >= account_len then itemlen_metalen
+            else if rlp_account[offset] < 128 then [rlp_account[offset]] ++ [0]
+            else if rlp_account[offset] < 184 then [rlp_account[offset] - 128] ++ [1]
+            else if rlp_account[offset] == 184 then [rlp_account[(offset + 1) :! {0..133}]] ++ [2]
+            else [
+                b2n(x"000000000000000000000000000000000000000000000000000000000000" ++ unsafe_bslice(
+                    rlp_account,
+                    offset + 1,
+                    offset + 3
+                ) :! %[2])
+            ] ++ [3];
+        account <- if offset < account_len 
+            then (account ++ [
+                unsafe_bslice(
+                    rlp_account,
+                    offset + itemlen_metalen[1],
+                    offset + itemlen_metalen[0] + itemlen_metalen[1]
+                )
+            ]) :! Account
+            else account;
+        offset <- (offset + itemlen_metalen[0] + itemlen_metalen[1]) :! {0..133} # todo: more efficient to check if or to add?
+    return account
+
+# Verifies that the MPT proof included with the spending transaction proves the coin was burned on
+# Ethereum; If the conditions are met then the return value is the recipient's Themelio address, otherwise, 0
+def unlock(): Hash | False =
+    unsafe let proof = get_proof() :! Proof in
+    let rlp_nodes = to_rlp_nodes(proof) :! RlpNodes in
+    let nodes = decode_rlp_nodes(rlp_nodes) in
+    let eth_bridge_addr = x"b5b3476b6013da990eb2ee593bc261ac20df8908" in
+    let account_key = keccak256(eth_bridge_addr) in
+    let account_nibbles = to_nibbles(account_key) in
+    let acc_proof_state = [0, get_state_root(), 0] :: ProofState in
+    let acc_proof_result =    verify_proof(rlp_nodes, nodes, account_nibbles, acc_proof_state) in
+    if !(b2n(acc_proof_result[1]) == 0 && acc_proof_result[2] == 64) then 0 else
+    let storage_slot = x"00000000000000000000000000000000000000000000000000000000000000fe" in
+    let storage_idx = keccak256(env_parent_tx_hash() ++ storage_slot) in
+    let storage_key = keccak256(n2b(b2n(storage_idx) + 2)) in
+    let storage_nibbles = to_nibbles(storage_key) in
+    let account = decode_rlp_account((nodes :! [[%[];]; 64])[(acc_proof_result[0] - 1) :! {0..63}] :! [RlpAccount; 4][1]) in
+    let storage_root = account[2] in
+    let sto_proof_state = [acc_proof_result[0], storage_root, 0] :! ProofState in
+    let sto_proof_result = verify_proof(rlp_nodes, nodes, storage_nibbles, sto_proof_state) in
+    if !(sto_proof_result[0] == vlen(rlp_nodes) && b2n(sto_proof_result[1]) == 0 && sto_proof_result[2] == 64) then 0 else
+    let leaf_val = vref(vref(nodes, sto_proof_result[0] - 1) :! [%[];], 1) :! %[] in
+    let recipient = unsafe_bslice(leaf_val, 1, blen(leaf_val)) :! Hash in
+    if b2n(recipient) == 0 || b2n(recipient) == 1 then 0 else recipient
+
+# Returns true if given two equal denoms, false otherwise
 def denom_eq(a: %[], b: %[]): Bool =
     if blen(a) == 1 && blen(b) == 1 then
         unsafe ((a :! %[1])[0] == (b :! %[1])[0])
@@ -19,27 +434,15 @@ def denom_eq(a: %[], b: %[]): Bool =
 
 ---
 
-let proof = get_proof() in
-# proof can't be false
-proof &&
-if proof.quantity < env_parent_value() then
-    # self-propagate and ensure that all the "rest" of the locked coins go to the self-propagated covenant
-    # the unlocked quantity goes to the destination address
-    let output_0 = vref(env_spender_tx().outputs, 0) in
-    let output_1 = vref(env_spender_tx().outputs, 1) in
-        output_0 && 
-        output_0.value == env_parent_value() - proof.quantity && 
-        denom_eq(output_0.denom, env_parent_denom()) &&
-        b2n(output_0.covhash) == b2n(env_self_hash()) &&
-        output_1 &&
-        output_1.value == proof.quantity &&
-        denom_eq(output_1.denom, env_parent_denom()) &&
-        b2n(output_1.covhash) == b2n(proof.destination)
-else if proof.quantity == env_parent_value() then
-    # fully unlock, meaning there are no constraints other than the first output must contain all the money to the right destination
-    let output_0 = vref(env_spender_tx().outputs, 0) in
-        output_0 &&
-        output_0.value == env_parent_value() &&
-        denom_eq(output_0.denom, env_parent_denom()) &&
-        b2n(output_0.covhash) == b2n(proof.destination)
-else 0
+# Fully unlock the coin with the only constraint being that the first output must have the same value as
+# the parent coin and the covhash must match the ThemelioRecipient address supplied as an argument in
+# its Ethereum burn
+let output_0 = vref(env_spender_tx().outputs, 0) in
+    let recipient = unlock() in
+    output_0 &&
+	env_parent_index() == 0 &&
+    output_0.value == env_parent_value() &&
+    denom_eq(output_0.denom, env_parent_denom()) &&
+    #recipient &&
+    #b2n(output_0.covhash) == b2n(recipient)
+	recipient
