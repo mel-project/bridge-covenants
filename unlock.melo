@@ -325,7 +325,7 @@ def to_nibbles(key: %[]): Nibbles =
 
 # retrieves the header state root at the height the proof was retrieved
 def get_state_root(): Hash =
-  x"c671c549337d6a4ee70629601169bff2f65c91f573f1f88ed21978e45aa61b02"
+  x"337333f8eea1792a7366ca569cfa38f01c79240c20a9a06f6d89d87aebe1a18a"
 
 # matches common paths in extension and leaf node partial paths to key nibbles and returns the resulting nibble index
 def skip_path(nibbles: Nibbles, nib_idx: {0..63}, path: %[]): NibblesIndex =
@@ -340,7 +340,7 @@ def skip_path(nibbles: Nibbles, nib_idx: {0..63}, path: %[]): NibblesIndex =
 
 # the state transition function for MPT proofs
 def proof_stf(rlp_nodes: RlpNodes, nodes: Nodes, nibbles: Nibbles, state: ProofState): ProofState =
-  unsafe if !(b2n(keccak256(rlp_nodes[state[0]]))) == b2n(state[1]) then fail! else
+  unsafe if !(b2n(keccak256(rlp_nodes[state[0]])) == b2n(state[1])) then fail! else
   let node = vref(nodes, state[0]) :! [%[32]; 17] in
   if vlen(node) == 17 # branch
   then [
